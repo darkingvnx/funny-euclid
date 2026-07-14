@@ -56,30 +56,26 @@ const simulateCiphertext = (length) => {
 };
 
 export default function SecureChatApp() {
-  // Trạng thái Người dùng & Kết nối P2P
   const [currentUser, setCurrentUser] = useState({
     id: "",
     name: generateNickname(),
   });
   const [peerInstance, setPeerInstance] = useState(null);
   const [activeConnection, setActiveConnection] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState("disconnected"); // disconnected, connecting, connected
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
 
-  // Trạng thái Gọi thoại / Video (WebRTC MediaStream)
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
-  const [callState, setCallState] = useState("idle"); // idle, calling (đang gọi), receiving (cuộc gọi đến), active (đang nói chuyện)
+  const [callState, setCallState] = useState("idle");
   const [isVideoCall, setIsVideoCall] = useState(false);
 
-  // Quản lý phòng & Tin nhắn
   const [rooms, setRooms] = useState([
     { id: "lobby", name: "Trạm chờ kết nối P2P" },
   ]);
   const [currentRoom, setCurrentRoom] = useState("lobby");
   const [messages, setMessages] = useState({ lobby: [] });
 
-  // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [inputText, setInputText] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -89,12 +85,9 @@ export default function SecureChatApp() {
 
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
-
-  // Refs phục vụ hiển thị Video Luồng dữ liệu (Stream)
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
-  // Gắn luồng video vào thẻ HTML khi có luồng dữ liệu truyền/nhận
   useEffect(() => {
     if (localVideoRef.current && localStream)
       localVideoRef.current.srcObject = localStream;
@@ -105,20 +98,23 @@ export default function SecureChatApp() {
       remoteVideoRef.current.srcObject = remoteStream;
   }, [remoteStream, callState]);
 
-  // 1. KHỞI TẠO PEERJS & LẮNG NGHE KẾT NỐI (ĐÃ TỐI ƯU 4G/5G)
+  // 1. KHỞI TẠO PEERJS VỚI HỆ THỐNG ĐƯỜNG TRUYỀN PHÒNG VỆ ĐA TẦNG
   useEffect(() => {
-    // Cấu hình danh sách các Server dẫn đường và trung chuyển dữ liệu
-    const iceConfiguration = {
+    const peerConfig = {
+      debug: 3, // Bật log cấp độ tối đa trong Console để theo dõi chi tiết ICE đàm phán
       config: {
         iceServers: [
-          // STUN Server miễn phí của Google (Giúp kết nối trực tiếp khi dùng Wi-Fi)
+          // Lớp 1: Hệ thống định tuyến STUN của Google
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun3.l.google.com:19302" },
+          { urls: "stun:stun4.l.google.com:19302" },
+          // Lớp 2: STUN phụ trợ từ nhà mạng quốc tế
+          { urls: "stun:global.stun.twilio.com:3478" },
 
-          // TURN Server (Bắt buộc phải có để thông mạng 4G/5G)
-          // Lưu ý: Đây là server mẫu công cộng, để chạy mượt mà nhất khi ra mắt,
-          // bạn nên đăng ký một tài khoản miễn phí tại Twilio hoặc OpenRelay để lấy link riêng.
+          // Lớp 3: TURN Trung chuyển bắt buộc cho mạng Di động 4G/5G
+          // Thay thông tin này bằng khóa riêng của bạn tại mục hướng dẫn phía dưới nếu muốn tốc độ tối đa
           {
             urls: "turn:openrelay.metered.ca:443",
             username: "openrelayproject",
@@ -130,33 +126,49 @@ export default function SecureChatApp() {
             credential: "openrelayproject",
           },
         ],
+        iceTransportPolicy: "all", // Cho phép thử nghiệm mọi phương án đục tường lửa
+        iceCandidatePoolSize: 12, // Tăng tốc độ chuẩn bị đường truyền mạng di động
       },
-      debug: 1,
     };
 
-    // Khởi tạo Peer với cấu hình tối ưu mạng
-    const peer = new Peer(undefined, iceConfiguration);
+    const peer = new Peer(undefined, peerConfig);
 
     peer.on("open", (id) => {
+      console.log("=== THIẾT BỊ ĐÃ KHỞI TẠO THÀNH CÔNG === ID:", id);
       setCurrentUser((prev) => ({ ...prev, id: id }));
     });
 
     peer.on("connection", (conn) => {
+      console.log("Nhận tín hiệu kết nối từ thiết bị xa:", conn.peer);
       handleIncomingConnection(conn);
     });
 
     peer.on("call", (incomingCall) => {
+      console.log(
+        "Nhận tín hiệu cuộc gọi Voice/Video P2P từ:",
+        incomingCall.peer
+      );
       const isVideoRequested = incomingCall.options?.metadata?.video || false;
       setIsVideoCall(isVideoRequested);
       setActiveCall(incomingCall);
       setCallState("receiving");
     });
 
+    peer.on("error", (err) => {
+      console.error("Lỗi lõi mạng PeerJS:", err.type, err.message);
+      if (err.type === "peer-unavailable") {
+        alert(
+          "Thiết bị đối tác hiện không trực tuyến hoặc mã ID không chính xác."
+        );
+      }
+      setConnectionStatus("disconnected");
+    });
+
     setPeerInstance(peer);
     return () => peer.destroy();
   }, []);
 
-  // 2. XỬ LÝ KHI CÓ THIẾT BỊ KHÁC KẾT NỐI CHAT ĐẾN
+  // 2. XỬ LÝ DỮ LIỆU KHI CÓ THIẾT BỊ KẾT NỐI ĐẾN
   const handleIncomingConnection = (conn) => {
     setConnectionStatus("connected");
     setActiveConnection(conn);
@@ -175,17 +187,28 @@ export default function SecureChatApp() {
       if (data.type === "force-disconnect") handleResetToLobby();
     });
 
-    conn.on("close", () => handleResetToLobby());
+    conn.on("close", () => {
+      console.log("Đối tác đã đóng kết nối.");
+      handleResetToLobby();
+    });
+
+    conn.on("error", (err) => {
+      console.error("Lỗi kênh truyền DataChannel:", err);
+      handleResetToLobby();
+    });
   };
 
-  // 3. CHỦ ĐỘNG KẾT NỐI ĐẾN ĐỐI TÁC
+  // 3. CHỦ ĐỘNG KẾT NỐI ĐẾN ĐỐI TÁC (TỐI ƯU GIAO THỨC ĐÀM PHÁN)
   const handleJoinRoom = (e) => {
     e.preventDefault();
     if (!joinCode.trim() || !peerInstance) return;
 
     setConnectionStatus("connecting");
+
+    // Cấu hình kết nối có độ tin cậy dữ liệu cao (reliable: true)
     const conn = peerInstance.connect(joinCode.trim(), {
       metadata: { name: currentUser.name },
+      reliable: true,
     });
 
     conn.on("open", () => {
@@ -206,8 +229,11 @@ export default function SecureChatApp() {
     });
 
     conn.on("close", () => handleResetToLobby());
-    conn.on("error", () => {
-      alert("Không thể kết nối! Vui lòng kiểm tra lại mã.");
+    conn.on("error", (err) => {
+      console.error("Lỗi kết nối chủ động:", err);
+      alert(
+        "Không thể thiết lập liên kết mạng ngang hàng. Vui lòng kiểm tra lại mã."
+      );
       setConnectionStatus("disconnected");
     });
 
@@ -215,20 +241,24 @@ export default function SecureChatApp() {
     setIsSidebarOpen(false);
   };
 
-  // 4. CHỨC NĂNG GỌI ĐIỆN VÀ VIDEO CALL
+  // 4. ĐÀM PHÁN PHẦN CỨNG GỌI THOẠI / VIDEO CALL
   const handleStartCall = async (videoEnabled) => {
     if (!activeConnection || connectionStatus !== "connected") return;
     try {
-      // Yêu cầu quyền truy cập Camera/Microphone từ thiết bị
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoEnabled,
+        video: videoEnabled
+          ? {
+              width: { max: 640 },
+              height: { max: 480 },
+              frameRate: { max: 24 },
+            }
+          : false,
         audio: true,
       });
       setLocalStream(stream);
       setIsVideoCall(videoEnabled);
       setCallState("calling");
 
-      // Thực hiện cuộc gọi P2P, đính kèm cấu hình cuộc gọi qua metadata
       const call = peerInstance.call(activeConnection.peer, stream, {
         metadata: { video: videoEnabled },
       });
@@ -240,22 +270,33 @@ export default function SecureChatApp() {
       });
 
       call.on("close", () => handleEndCallLocal());
+      call.on("error", (err) => {
+        console.error("Lỗi luồng gọi thoại:", err);
+        handleEndCallLocal();
+      });
     } catch (err) {
       console.error(err);
-      alert("Lỗi: Không thể truy cập Camera hoặc Microphone của thiết bị.");
+      alert(
+        "Thiết bị không cấp quyền sử dụng Camera/Microphone hoặc phần cứng bận."
+      );
     }
   };
 
-  // CHẤP NHẬN CUỘC GỌI ĐẾN
   const handleAnswerCall = async () => {
     if (!activeCall) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: isVideoCall,
+        video: isVideoCall
+          ? {
+              width: { max: 640 },
+              height: { max: 480 },
+              frameRate: { max: 24 },
+            }
+          : false,
         audio: true,
       });
       setLocalStream(stream);
-      activeCall.answer(stream); // Trả lời bằng luồng media của mình
+      activeCall.answer(stream);
       setCallState("active");
 
       activeCall.on("stream", (remoteMediaStream) => {
@@ -265,12 +306,10 @@ export default function SecureChatApp() {
       activeCall.on("close", () => handleEndCallLocal());
     } catch (err) {
       console.error(err);
-      alert("Lỗi truy cập thiết bị phần cứng.");
       handleEndCallLocal();
     }
   };
 
-  // CÚP MÁY / DỪNG CUỘC GỌI
   const handleEndCallLocal = () => {
     if (activeCall) activeCall.close();
     if (localStream) localStream.getTracks().forEach((track) => track.stop());
@@ -280,16 +319,14 @@ export default function SecureChatApp() {
     setCallState("idle");
   };
 
-  // 5. CHỨC NĂNG XÓA NGƯỜI ĐÃ LIÊN KẾT (HỦY LIÊN KẾT)
   const handleDisconnectPeer = () => {
     if (
       window.confirm(
-        "Bạn có chắc chắn muốn ngắt kết nối và xóa liên kết với thiết bị này?"
+        "Ngắt kết nối và xóa toàn bộ chữ ký liên kết với thiết bị đối tác?"
       )
     ) {
       handleEndCallLocal();
       if (activeConnection) {
-        // Gửi tín hiệu thông báo cho thiết bị bên kia cùng ngắt kết nối ngầm
         try {
           activeConnection.send({ type: "force-disconnect" });
         } catch (e) {}
@@ -307,7 +344,7 @@ export default function SecureChatApp() {
     setCurrentRoom("lobby");
   };
 
-  // 6. NHẬN TIN NHẮN & CÁC TÍNH NĂNG PHỤ TRỢ KHÁC MÀU
+  // 5. CƠ CHẾ ĐỒNG BỘ TIN NHẮN MÃ HÓA
   const receiveMessageOverWire = (roomId, incomingMsg) => {
     const internalMsg = { ...incomingMsg, isDecrypting: true };
     setMessages((prev) => ({
@@ -379,23 +416,24 @@ export default function SecureChatApp() {
     }, 1500);
 
     if (activeConnection && connectionStatus === "connected") {
-      activeConnection.send({ type: "secure-msg", payload: securePayload });
+      try {
+        activeConnection.send({ type: "secure-msg", payload: securePayload });
+      } catch (err) {
+        console.error("Lỗi khi đẩy tin nhắn qua đường truyền:", err);
+      }
     }
   };
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      alert("Vui lòng chọn file dưới 5MB.");
+    if (file.size > 3 * 1024 * 1024) {
+      alert("Vui lòng chọn file dưới 3MB để tối ưu hóa băng thông 4G.");
       return;
     }
 
-    let type = "file";
-    if (file.type.startsWith("image/")) type = "image";
-
     const reader = new FileReader();
-    reader.onload = () => handleSendMessage(type, file.name, reader.result);
+    reader.onload = () => handleSendMessage("image", file.name, reader.result);
     reader.readAsDataURL(file);
     e.target.value = null;
   };
@@ -425,7 +463,7 @@ export default function SecureChatApp() {
 
   return (
     <div className="flex h-screen w-full bg-gray-900 text-gray-100 font-sans overflow-hidden">
-      {/* DIỆN MẠO SIDEBAR */}
+      {/* SIDEBAR */}
       <div
         className={`${
           isSidebarOpen ? "translate-x-0" : "-translate-x-full"
@@ -494,7 +532,6 @@ export default function SecureChatApp() {
                 <button
                   onClick={handleDisconnectPeer}
                   className="text-gray-400 hover:text-red-400 p-1 rounded transition"
-                  title="Xóa người liên kết"
                 >
                   <UserX className="w-4 h-4" />
                 </button>
@@ -535,11 +572,11 @@ export default function SecureChatApp() {
         />
       )}
 
-      {/* KHÔNG GIAN HỘI THOẠI CHÍNH */}
+      {/* CHAT SPACE */}
       <div className="flex-1 flex flex-col min-w-0 bg-gray-900 relative">
-        {/* MODAL KHI CÓ CUỘC GỌI ĐẾN */}
+        {/* MODAL CUỘC GỌI ĐẾN */}
         {callState === "receiving" && (
-          <div className="absolute inset-0 bg-black/90 z-50 flex flex-col items-center justify-center p-6 space-y-6">
+          <div className="absolute inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-6 space-y-6">
             <div className="w-20 h-20 bg-emerald-600/20 border-2 border-emerald-500 rounded-full flex items-center justify-center text-emerald-400 animate-bounce">
               {isVideoCall ? (
                 <Video className="w-10 h-10" />
@@ -549,23 +586,23 @@ export default function SecureChatApp() {
             </div>
             <div className="text-center">
               <h3 className="text-lg font-bold text-white">
-                Cuộc gọi bảo mật đến...
+                Cuộc gọi mã hóa bảo mật...
               </h3>
               <p className="text-xs text-gray-400 mt-1">
-                Đối tác muốn kết nối{" "}
-                {isVideoCall ? "Video Call" : "Điện thoại thoại P2P"}
+                Đối tác muốn{" "}
+                {isVideoCall ? "Video Call" : "Gọi thoại thoại P2P"}
               </p>
             </div>
             <div className="flex gap-6">
               <button
                 onClick={handleAnswerCall}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 shadow-lg"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2"
               >
-                <Phone className="w-4 h-4" /> Trả lời
+                <Phone className="w-4 h-4" /> Chấp nhận
               </button>
               <button
                 onClick={handleEndCallLocal}
-                className="bg-red-600 hover:bg-red-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 shadow-lg"
+                className="bg-red-600 hover:bg-red-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2"
               >
                 <PhoneOff className="w-4 h-4" /> Từ chối
               </button>
@@ -573,7 +610,7 @@ export default function SecureChatApp() {
           </div>
         )}
 
-        {/* Header Giao diện chat */}
+        {/* Header */}
         <div className="h-14 border-b border-gray-800 flex justify-between items-center px-4 bg-gray-900 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -596,7 +633,6 @@ export default function SecureChatApp() {
             </div>
           </div>
 
-          {/* Các nút tính năng Cuộc gọi & Hủy kết nối nhanh */}
           {currentRoom !== "lobby" && connectionStatus === "connected" && (
             <div className="flex items-center gap-1.5">
               <button
@@ -618,7 +654,7 @@ export default function SecureChatApp() {
               <button
                 onClick={handleDisconnectPeer}
                 className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded-md transition"
-                title="Ngắt liên kết đối tác hoàn toàn"
+                title="Xóa liên kết"
               >
                 <UserX className="w-4 h-4" />
               </button>
@@ -626,19 +662,18 @@ export default function SecureChatApp() {
           )}
         </div>
 
-        {/* VÙNG HIỂN THỊ STREAM KHI ĐANG TRONG CUỘC GỌI */}
+        {/* VÙNG VIDEO STREAM */}
         {["calling", "active"].includes(callState) && (
           <div className="bg-black border-b border-gray-800 p-3 relative flex justify-center items-center shrink-0">
             {callState === "calling" ? (
               <div className="h-40 flex flex-col items-center justify-center text-gray-400">
                 <Phone className="w-8 h-8 animate-pulse text-emerald-500 mb-2" />
                 <span className="text-xs">
-                  Đang đổ chuông bảo mật kết nối ngang hàng...
+                  Đang thiết lập định tuyến bảo mật ngang hàng qua 4G...
                 </span>
               </div>
             ) : (
               <div className="relative w-full max-w-xl h-60 bg-gray-950 rounded-xl overflow-hidden border border-gray-800 flex items-center justify-center">
-                {/* Video của đối phương */}
                 {isVideoCall ? (
                   <video
                     ref={remoteVideoRef}
@@ -650,12 +685,10 @@ export default function SecureChatApp() {
                   <div className="flex flex-col items-center gap-2 text-gray-400">
                     <Phone className="w-12 h-12 animate-pulse text-emerald-400" />
                     <span className="text-xs">
-                      Đang thực hiện cuộc gọi Voice P2P ẩn danh...
+                      Cuộc gọi thoại bảo mật đang hoạt động...
                     </span>
                   </div>
                 )}
-
-                {/* Video thu nhỏ của chính mình (chỉ khi bật camera) */}
                 {isVideoCall && localStream && (
                   <video
                     ref={localVideoRef}
@@ -667,17 +700,16 @@ export default function SecureChatApp() {
                 )}
               </div>
             )}
-            {/* Nút dập máy nổi */}
             <button
               onClick={handleEndCallLocal}
-              className="absolute bottom-6 bg-red-600 hover:bg-red-500 text-white p-3 rounded-full shadow-2xl transition z-20"
+              className="absolute bottom-6 bg-red-600 hover:bg-red-500 text-white p-3 rounded-full shadow-2xl z-20"
             >
               <PhoneOff className="w-5 h-5" />
             </button>
           </div>
         )}
 
-        {/* Danh sách luồng tin nhắn */}
+        {/* Message List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {currentRoom === "lobby" ? (
             <div className="h-full flex flex-col items-center justify-center p-6 text-center max-w-md mx-auto space-y-4">
@@ -685,12 +717,11 @@ export default function SecureChatApp() {
                 <Shield className="w-6 h-6 animate-pulse" />
               </div>
               <h3 className="font-bold text-sm text-gray-200">
-                Kênh kết nối bảo mật phi tập trung
+                Kênh bảo mật P2P Cloudflare Pages
               </h3>
               <p className="text-xs text-gray-400 leading-relaxed">
-                Hãy dán P2P ID của thiết bị kia để bắt đầu liên kết chat bảo
-                mật, đính kèm dữ liệu media mã hóa và thiết lập cuộc gọi thoại
-                trực tiếp.
+                Hệ thống đã tự động kích hoạt tối ưu hóa mạng di động. Hãy sao
+                chép mã P2P ID ở trên để bắt đầu ghép nối.
               </p>
             </div>
           ) : (
@@ -727,7 +758,7 @@ export default function SecureChatApp() {
                             <img
                               src={msg.fileUrl}
                               alt="P2P"
-                              className="max-w-full rounded-md max-h-48 object-cover mt-1"
+                              className="max-w-full rounded-md max-h-48 object-cover mt-1 border border-gray-700"
                             />
                           )}
                         </div>
@@ -765,7 +796,7 @@ export default function SecureChatApp() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Thanh công cụ nhập tin */}
+        {/* Input Tools */}
         <div className="p-3 bg-gray-900 border-t border-gray-800">
           <div className="flex gap-2 mb-2">
             <button

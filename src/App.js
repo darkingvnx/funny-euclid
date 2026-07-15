@@ -8,40 +8,78 @@ import {
   X,
   Send,
   Paperclip,
-  Trash2,
   Clock,
   UserPlus,
-  Image as ImageIcon,
   Copy,
   Check,
   Phone,
   PhoneOff,
   Video,
   UserX,
+  Activity,
+  Terminal,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 
-const generateNickname = () => {
-  const adjectives = [
-    "Shadow",
-    "Silent",
-    "Quantum",
-    "Neon",
-    "Cyber",
-    "Ghost",
-    "Void",
-  ];
-  const nouns = ["Fox", "Wolf", "Hawk", "Pulse", "Byte", "Echo", "Ninja"];
-  return `${adjectives[Math.floor(Math.random() * adjectives.length)]}${
-    nouns[Math.floor(Math.random() * nouns.length)]
-  }`;
+// ==========================================
+// THUẬT TOÁN MÃ HÓA QUÂN ĐỘI (AES-GCM 256-bit)
+// ==========================================
+const cryptoSetup = {
+  generateKey: async () => {
+    return await window.crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      true,
+      ["encrypt", "decrypt"]
+    );
+  },
+  exportKey: async (key) => {
+    const exported = await window.crypto.subtle.exportKey("raw", key);
+    return Array.from(new Uint8Array(exported));
+  },
+  importKey: async (keyArray) => {
+    return await window.crypto.subtle.importKey(
+      "raw",
+      new Uint8Array(keyArray),
+      { name: "AES-GCM" },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  },
+  encryptData: async (key, payloadObj) => {
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const encoded = new TextEncoder().encode(JSON.stringify(payloadObj));
+    const ciphertext = await window.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: iv },
+      key,
+      encoded
+    );
+    return {
+      cipherBytes: Array.from(new Uint8Array(ciphertext)),
+      ivBytes: Array.from(iv),
+    };
+  },
+  decryptData: async (key, cipherBytes, ivBytes) => {
+    const decrypted = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(ivBytes) },
+      key,
+      new Uint8Array(cipherBytes)
+    );
+    return JSON.parse(new TextDecoder().decode(decrypted));
+  },
+  bytesToHex: (bytes) =>
+    bytes
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .substring(0, 32) + "...",
 };
 
-const simulateCiphertext = (length) => {
-  const chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()";
-  return Array.from({ length: Math.max(12, length) })
-    .map(() => chars.charAt(Math.floor(Math.random() * chars.length)))
-    .join("");
+const generateNickname = () => {
+  const adjs = ["Phantom", "Stealth", "Apex", "Cyber", "Nova"];
+  const nouns = ["Protocol", "Unit", "Cipher", "Matrix", "Node"];
+  return `${adjs[Math.floor(Math.random() * adjs.length)]}_${
+    nouns[Math.floor(Math.random() * nouns.length)]
+  }`;
 };
 
 export default function SecureChatApp() {
@@ -49,22 +87,18 @@ export default function SecureChatApp() {
     id: "",
     name: generateNickname(),
   });
-  const [peerInstance, setPeerInstance] = useState(null);
-  const [activeConnection, setActiveConnection] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
+  const [encryptionState, setEncryptionState] = useState("unsecured");
 
+  // State Media & P2P
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
   const [callState, setCallState] = useState("idle");
   const [isVideoCall, setIsVideoCall] = useState(false);
 
-  const [rooms, setRooms] = useState([
-    { id: "lobby", name: "Trạm chờ kết nối P2P" },
-  ]);
-  const [currentRoom, setCurrentRoom] = useState("lobby");
-  const [messages, setMessages] = useState({ lobby: [] });
-
+  // State UI & Chat
+  const [messages, setMessages] = useState([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [inputText, setInputText] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -72,10 +106,18 @@ export default function SecureChatApp() {
   const [showTimerMenu, setShowTimerMenu] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // Tính năng mới
+  const [partnerTyping, setPartnerTyping] = useState(false);
+  const [privacyMode, setPrivacyMode] = useState(false);
+
+  const peerRef = useRef(null);
+  const connRef = useRef(null);
+  const sharedKeyRef = useRef(null);
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (localVideoRef.current && localStream)
@@ -87,35 +129,25 @@ export default function SecureChatApp() {
       remoteVideoRef.current.srcObject = remoteStream;
   }, [remoteStream, callState]);
 
-  // ==========================================
-  // LÕI MẠNG ĐÃ ĐƯỢC TỐI ƯU HÓA CHO 4G/5G
-  // ==========================================
+  // Phím tắt Kích hoạt Privacy Mode (Nút ESC)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") setPrivacyMode((prev) => !prev);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // KHỞI TẠO PEERJS
   useEffect(() => {
     const peer = new Peer(undefined, {
       secure: true,
-      debug: 2,
+      debug: 1,
       config: {
         iceServers: [
-          {
-            urls: "stun:stun.relay.metered.ca:80",
-          },
+          { urls: "stun:stun.relay.metered.ca:80" },
           {
             urls: "turn:global.relay.metered.ca:80",
-            username: "007f172b13f568869488991e",
-            credential: "Ia/VNUXBdCJNlagv",
-          },
-          {
-            urls: "turn:global.relay.metered.ca:80?transport=tcp",
-            username: "007f172b13f568869488991e",
-            credential: "Ia/VNUXBdCJNlagv",
-          },
-          {
-            urls: "turn:global.relay.metered.ca:443",
-            username: "007f172b13f568869488991e",
-            credential: "Ia/VNUXBdCJNlagv",
-          },
-          {
-            urls: "turns:global.relay.metered.ca:443?transport=tcp",
             username: "007f172b13f568869488991e",
             credential: "Ia/VNUXBdCJNlagv",
           },
@@ -123,124 +155,217 @@ export default function SecureChatApp() {
       },
     });
 
-    peer.on("open", (id) => {
-      setCurrentUser((prev) => ({ ...prev, id: id }));
-    });
+    peer.on("open", (id) => setCurrentUser((prev) => ({ ...prev, id })));
 
     peer.on("connection", (conn) => {
-      handleIncomingConnection(conn);
+      setConnectionStatus("connected");
+      connRef.current = conn;
+      setupConnectionListeners(conn);
     });
 
     peer.on("call", (incomingCall) => {
-      const isVideoRequested = incomingCall.options?.metadata?.video || false;
-      setIsVideoCall(isVideoRequested);
+      setIsVideoCall(incomingCall.options?.metadata?.video || false);
       setActiveCall(incomingCall);
       setCallState("receiving");
     });
 
-    peer.on("error", (err) => {
-      console.error("Lỗi PeerJS:", err);
-      alert(`Lỗi mạng: ${err.message}. Vui lòng thử lại.`);
-      setConnectionStatus("disconnected");
-    });
-
-    setPeerInstance(peer);
+    peerRef.current = peer;
     return () => peer.destroy();
   }, []);
 
-  const handleIncomingConnection = (conn) => {
-    setConnectionStatus("connected");
-    setActiveConnection(conn);
-    const remoteName = conn.metadata?.name || "Đối tác ẩn danh";
-    const newRoomId = conn.peer;
+  const setupConnectionListeners = (conn) => {
+    conn.on("data", async (data) => {
+      // Nhận tín hiệu Typing
+      if (data.type === "TYPING") setPartnerTyping(true);
+      if (data.type === "STOP_TYPING") setPartnerTyping(false);
 
-    setRooms((prev) => [
-      ...prev.filter((r) => r.id !== newRoomId),
-      { id: newRoomId, name: `Kênh mật: ${remoteName}` },
-    ]);
-    setCurrentRoom(newRoomId);
+      if (data.type === "KEY_EXCHANGE") {
+        setEncryptionState("handshaking");
+        try {
+          sharedKeyRef.current = await cryptoSetup.importKey(data.keyData);
+          setEncryptionState("secured");
+          conn.send({ type: "KEY_ACK" });
+        } catch (err) {
+          console.error("Lỗi khóa", err);
+        }
+      }
 
-    conn.on("data", (data) => {
-      if (data.type === "secure-msg")
-        receiveMessageOverWire(newRoomId, data.payload);
-      if (data.type === "force-disconnect") handleResetToLobby(true); // Tham số true để báo hiệu bị đối tác ngắt
+      if (data.type === "KEY_ACK") setEncryptionState("secured");
+
+      if (data.type === "E2EE_MSG") {
+        if (!sharedKeyRef.current) return;
+        setPartnerTyping(false); // Dừng hiệu ứng typing khi có tin nhắn tới
+
+        const realHexCipher = cryptoSetup.bytesToHex(data.cipherBytes);
+        const tempMsgId = Math.random().toString();
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: tempMsgId,
+            isDecrypting: true,
+            senderName: "Đối tác",
+            cipherText: realHexCipher,
+            timestamp: Date.now(),
+          },
+        ]);
+
+        setTimeout(async () => {
+          try {
+            const decryptedPayload = await cryptoSetup.decryptData(
+              sharedKeyRef.current,
+              data.cipherBytes,
+              data.ivBytes
+            );
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === tempMsgId
+                  ? { ...decryptedPayload, isDecrypting: false }
+                  : m
+              )
+            );
+          } catch (e) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === tempMsgId
+                  ? {
+                      ...m,
+                      content: "⚠️ Giải mã thất bại",
+                      isDecrypting: false,
+                    }
+                  : m
+              )
+            );
+          }
+        }, 1200);
+      }
+
+      if (data.type === "CLEANUP_ROOM") {
+        alert("Đối tác đã kích hoạt tự hủy phòng chat.");
+        handleResetToLobby();
+      }
     });
 
-    conn.on("close", () => handleResetToLobby(false));
+    conn.on("close", () => handleResetToLobby());
   };
 
-  const handleJoinRoom = (e) => {
+  const handleJoinRoom = async (e) => {
     e.preventDefault();
-    if (!joinCode.trim() || !peerInstance) return;
+    if (!joinCode.trim() || !peerRef.current) return;
     setConnectionStatus("connecting");
 
-    const conn = peerInstance.connect(joinCode.trim(), {
+    const conn = peerRef.current.connect(joinCode.trim(), {
       metadata: { name: currentUser.name },
     });
+    connRef.current = conn;
 
-    const timeout = setTimeout(() => {
-      if (connectionStatus !== "connected") {
-        alert(
-          "Kết nối quá hạn! Mạng 4G của bạn đang bị nhà mạng chặn P2P gắt gao. Hãy kiểm tra lại TURN Server."
-        );
-        setConnectionStatus("disconnected");
-      }
-    }, 10000);
-
-    conn.on("open", () => {
-      clearTimeout(timeout);
+    conn.on("open", async () => {
       setConnectionStatus("connected");
-      setActiveConnection(conn);
-      const newRoomId = conn.peer;
-      setRooms((prev) => [
-        ...prev.filter((r) => r.id !== newRoomId),
-        { id: newRoomId, name: `Kênh mật: Đối tác` },
-      ]);
-      setCurrentRoom(newRoomId);
-
-      conn.on("data", (data) => {
-        if (data.type === "secure-msg")
-          receiveMessageOverWire(newRoomId, data.payload);
-        if (data.type === "force-disconnect") handleResetToLobby(true);
-      });
+      setupConnectionListeners(conn);
+      setEncryptionState("handshaking");
+      const key = await cryptoSetup.generateKey();
+      sharedKeyRef.current = key;
+      const exportedRawKey = await cryptoSetup.exportKey(key);
+      conn.send({ type: "KEY_EXCHANGE", keyData: exportedRawKey });
     });
 
-    conn.on("close", () => handleResetToLobby(false));
     conn.on("error", () => {
-      clearTimeout(timeout);
-      alert("Không thể kết nối P2P. Mã bị sai hoặc tường lửa chặn.");
-      setConnectionStatus("disconnected");
+      alert("Kết nối thất bại. Lỗi tường lửa hoặc sai mã.");
+      handleResetToLobby();
     });
 
     setJoinCode("");
     setIsSidebarOpen(false);
   };
 
+  // Hàm xử lý khi gõ phím (Typing Indicator)
+  const handleInputChange = (e) => {
+    setInputText(e.target.value);
+    if (connRef.current && connectionStatus === "connected") {
+      connRef.current.send({ type: "TYPING" });
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        connRef.current.send({ type: "STOP_TYPING" });
+      }, 1500);
+    }
+  };
+
+  const handleSendMessage = async (
+    type = "text",
+    content = inputText,
+    fileDataUrl = null
+  ) => {
+    if (
+      !sharedKeyRef.current ||
+      (type === "text" && !content.trim() && !fileDataUrl)
+    )
+      return;
+    clearTimeout(typingTimeoutRef.current);
+    if (connRef.current) connRef.current.send({ type: "STOP_TYPING" });
+
+    const deleteAt =
+      timerSetting > 0 ? Date.now() + timerSetting * 1000 + 1200 : null;
+    const msgId = Date.now().toString();
+
+    const payloadObj = {
+      id: msgId,
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      type: type,
+      content: content,
+      fileUrl: fileDataUrl,
+      timestamp: Date.now(),
+      deleteAt: deleteAt,
+    };
+
+    const { cipherBytes, ivBytes } = await cryptoSetup.encryptData(
+      sharedKeyRef.current,
+      payloadObj
+    );
+    const realHexCipher = cryptoSetup.bytesToHex(cipherBytes);
+
+    connRef.current.send({ type: "E2EE_MSG", cipherBytes, ivBytes });
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        ...payloadObj,
+        isDecrypting: true,
+        cipherText: realHexCipher,
+      },
+    ]);
+
+    if (type === "text") setInputText("");
+
+    setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, isDecrypting: false } : m))
+      );
+    }, 1200);
+  };
+
+  // Cuộc gọi & Hủy kết nối
   const handleStartCall = async (videoEnabled) => {
-    if (!activeConnection || connectionStatus !== "connected") return;
+    if (!connRef.current || connectionStatus !== "connected") return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoEnabled
-          ? { facingMode: "user", width: { ideal: 640 } }
-          : false,
+        video: videoEnabled ? { facingMode: "user" } : false,
         audio: true,
       });
       setLocalStream(stream);
       setIsVideoCall(videoEnabled);
       setCallState("calling");
-
-      const call = peerInstance.call(activeConnection.peer, stream, {
+      const call = peerRef.current.call(connRef.current.peer, stream, {
         metadata: { video: videoEnabled },
       });
       setActiveCall(call);
-
-      call.on("stream", (remoteMediaStream) => {
+      call.on("stream", (remote) => {
         setCallState("active");
-        setRemoteStream(remoteMediaStream);
+        setRemoteStream(remote);
       });
       call.on("close", () => handleEndCallLocal());
     } catch (err) {
-      alert("Lỗi: Trình duyệt chưa cấp quyền Camera/Microphone.");
+      alert("Không thể truy cập Camera/Micro.");
     }
   };
 
@@ -248,18 +373,13 @@ export default function SecureChatApp() {
     if (!activeCall) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: isVideoCall
-          ? { facingMode: "user", width: { ideal: 640 } }
-          : false,
+        video: isVideoCall ? { facingMode: "user" } : false,
         audio: true,
       });
       setLocalStream(stream);
       activeCall.answer(stream);
       setCallState("active");
-
-      activeCall.on("stream", (remoteMediaStream) => {
-        setRemoteStream(remoteMediaStream);
-      });
+      activeCall.on("stream", (remote) => setRemoteStream(remote));
       activeCall.on("close", () => handleEndCallLocal());
     } catch (err) {
       handleEndCallLocal();
@@ -275,190 +395,121 @@ export default function SecureChatApp() {
     setCallState("idle");
   };
 
-  // Tính năng ngắt kết nối và xóa sạch dữ liệu
-  const handleDisconnectPeer = () => {
-    if (
-      window.confirm(
-        "Ngắt kết nối với thiết bị đối tác và xóa toàn bộ trò chuyện?"
-      )
-    ) {
-      handleEndCallLocal();
-      if (activeConnection) {
-        try {
-          activeConnection.send({ type: "force-disconnect" });
-        } catch (e) {}
-        activeConnection.close();
-      }
-      handleResetToLobby(false);
-    }
-  };
-
-  // Đồng bộ làm sạch phòng chờ và bộ nhớ RAM
-  const handleResetToLobby = (isForced = false) => {
-    handleEndCallLocal();
-    setActiveConnection(null);
-    setConnectionStatus("disconnected");
-    setRooms([{ id: "lobby", name: "Trạm chờ kết nối P2P" }]);
-    setCurrentRoom("lobby");
-
-    // Xóa sạch toàn bộ tin nhắn khỏi bộ nhớ
-    setMessages({ lobby: [] });
-
-    // Hiển thị thông báo nếu do đối phương ngắt
-    if (isForced) {
-      alert(
-        "Đối tác đã kết thúc trò chuyện. Toàn bộ lịch sử đã được xóa bảo mật trên cả 2 thiết bị."
-      );
-    }
-  };
-
-  const receiveMessageOverWire = (roomId, incomingMsg) => {
-    const internalMsg = { ...incomingMsg, isDecrypting: true };
-    setMessages((prev) => ({
-      ...prev,
-      [roomId]: [...(prev[roomId] || []), internalMsg],
-    }));
-
-    if (internalMsg.expiresAt) {
-      // Đồng bộ thời gian hết hạn theo clock của máy nhận
-      internalMsg.expiresAt =
-        Date.now() + internalMsg.timerDuration * 1000 + 1500;
-    }
-
-    setTimeout(() => {
-      setMessages((prev) => {
-        const list = prev[roomId] || [];
-        return {
-          ...prev,
-          [roomId]: list.map((m) =>
-            m.id === internalMsg.id ? { ...m, isDecrypting: false } : m
-          ),
-        };
-      });
-    }, 1500);
-  };
-
-  const handleSendMessage = (
-    type = "text",
-    content = inputText,
-    fileDataUrl = null
-  ) => {
-    if (type === "text" && !content.trim() && !fileDataUrl) return;
-
-    const msgId = Math.random().toString(36).substring(2, 9);
-    const cipher = simulateCiphertext(content ? content.length : 24);
-
-    const securePayload = {
-      id: msgId,
-      senderId: currentUser.id,
-      senderName: currentUser.name,
-      type: type,
-      content: content,
-      fileUrl: fileDataUrl,
-      timestamp: Date.now(),
-      timerDuration: timerSetting,
-      expiresAt:
-        timerSetting > 0 ? Date.now() + timerSetting * 1000 + 1500 : null,
-      cipherText: cipher,
-    };
-
-    setMessages((prev) => ({
-      ...prev,
-      [currentRoom]: [
-        ...(prev[currentRoom] || []),
-        { ...securePayload, isDecrypting: true },
-      ],
-    }));
-
-    if (type === "text") setInputText("");
-
-    setTimeout(() => {
-      setMessages((prev) => {
-        const list = prev[currentRoom] || [];
-        return {
-          ...prev,
-          [currentRoom]: list.map((m) =>
-            m.id === msgId ? { ...m, isDecrypting: false } : m
-          ),
-        };
-      });
-    }, 1500);
-
-    if (activeConnection && connectionStatus === "connected") {
-      try {
-        activeConnection.send({ type: "secure-msg", payload: securePayload });
-      } catch (err) {}
-    }
-  };
-
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 3 * 1024 * 1024) {
-      alert("File quá lớn cho mạng 4G. Tối đa 3MB.");
-      return;
-    }
-
+    if (file.size > 3 * 1024 * 1024)
+      return alert("WebRTC giới hạn file < 3MB.");
     const reader = new FileReader();
     reader.onload = () => handleSendMessage("image", file.name, reader.result);
     reader.readAsDataURL(file);
     e.target.value = null;
   };
 
-  // Garbage Collector quét và xóa tin nhắn hết hạn mỗi 1 giây
+  const handleDestroyRoom = () => {
+    if (
+      window.confirm("Hủy phòng chat và xóa sạch dữ liệu trên cả 2 thiết bị?")
+    ) {
+      if (connRef.current) {
+        connRef.current.send({ type: "CLEANUP_ROOM" });
+        setTimeout(() => connRef.current.close(), 500);
+      }
+      handleResetToLobby();
+    }
+  };
+
+  const handleResetToLobby = () => {
+    handleEndCallLocal();
+    connRef.current = null;
+    sharedKeyRef.current = null;
+    setConnectionStatus("disconnected");
+    setEncryptionState("unsecured");
+    setMessages([]);
+    setPartnerTyping(false);
+  };
+
+  // Garbage Collector
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      setMessages((prev) => {
-        let changed = false;
-        const copy = { ...prev };
-        Object.keys(copy).forEach((rId) => {
-          const oldLen = copy[rId].length;
-          copy[rId] = copy[rId].filter(
-            (m) => !m.expiresAt || m.expiresAt > now
-          );
-          if (copy[rId].length !== oldLen) changed = true;
-        });
-        return changed ? copy : prev;
-      });
+      setMessages((prev) =>
+        prev.filter((m) => !m.deleteAt || now < m.deleteAt)
+      );
     }, 1000);
     return () => clearInterval(interval);
   }, []);
 
+  // Fix lỗi Scroll tự động cuộn trang
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentRoom]);
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
+    }
+  }, [messages, partnerTyping]);
 
+  // ==========================================
+  // GIAO DIỆN UI/UX HIỆN ĐẠI
+  // ==========================================
   return (
-    <div className="flex h-screen w-full bg-gray-900 text-gray-100 font-sans overflow-hidden">
-      {/* SIDEBAR BÊN TRÁI */}
+    <div className="flex h-screen w-screen bg-[#070b14] text-gray-100 font-sans overflow-hidden selection:bg-emerald-500/30">
+      {/* Background Cyberpunk Blur */}
+      <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-emerald-600/10 rounded-full blur-[120px] pointer-events-none z-0"></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-blue-600/10 rounded-full blur-[120px] pointer-events-none z-0"></div>
+
+      {/* CHẾ ĐỘ ẨN DANH KHẨN CẤP (PRIVACY MODE) */}
+      {privacyMode && (
+        <div className="absolute inset-0 z-[100] bg-black/95 backdrop-blur-3xl flex flex-col items-center justify-center">
+          <Shield className="w-16 h-16 text-gray-600 mb-4" />
+          <h2 className="text-xl font-bold text-gray-500 tracking-widest">
+            CHẾ ĐỘ ẨN DANH
+          </h2>
+          <p className="text-sm text-gray-600 mt-2">
+            Nhấn ESC hoặc chạm vào đây để mở khóa
+          </p>
+          <button
+            onClick={() => setPrivacyMode(false)}
+            className="absolute inset-0 w-full h-full cursor-default"
+          ></button>
+        </div>
+      )}
+
+      {/* SIDEBAR */}
       <div
         className={`${
           isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-        } md:translate-x-0 absolute md:relative z-20 flex flex-col w-72 h-full bg-gray-950 border-r border-gray-800 transition-transform duration-300 ease-in-out`}
+        } md:translate-x-0 absolute md:relative z-30 flex flex-col w-72 md:w-80 h-full bg-[#0d1424]/90 backdrop-blur-2xl border-r border-white/5 transition-transform duration-300 ease-out shadow-2xl shrink-0`}
       >
-        <div className="p-4 border-b border-gray-800 flex justify-between items-center bg-gray-900">
-          <div className="flex items-center gap-2 text-emerald-400">
-            <Shield className="w-5 h-5" />
-            <span className="font-bold tracking-wider text-sm">
-              SECURE NETWORK
-            </span>
+        <div className="p-5 border-b border-white/5 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-gradient-to-br from-emerald-500/20 to-emerald-500/5 rounded-xl border border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+              <Shield className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <span className="block font-bold tracking-widest text-sm text-gray-100 uppercase">
+                Aegis Core
+              </span>
+              <span className="block text-[10px] text-emerald-500 font-mono tracking-wider">
+                AES-256 SECURE
+              </span>
+            </div>
           </div>
           <button
-            className="md:hidden p-1 text-gray-400 hover:text-white"
+            className="md:hidden p-2 text-gray-400 hover:text-white bg-white/5 rounded-lg"
             onClick={() => setIsSidebarOpen(false)}
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-3 m-3 bg-gray-900 border border-gray-800 rounded-lg">
-          <div className="text-[11px] font-semibold text-gray-500 uppercase mb-1">
-            Mã kết nối của bạn
+        <div className="p-4 mx-4 mt-5 bg-[#070b14]/80 border border-white/5 rounded-2xl shadow-inner relative group">
+          <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+            <Terminal className="w-3 h-3" /> Mã Định Danh (ID)
           </div>
-          <div className="flex items-center justify-between bg-gray-950 rounded p-2 border border-gray-800">
+          <div className="flex items-center justify-between bg-black/40 rounded-xl p-3 border border-white/5">
             <span className="font-mono text-xs text-emerald-400 select-all truncate mr-2">
-              {currentUser.id ? currentUser.id : "Đang lấy ID..."}
+              {currentUser.id ? currentUser.id : "Đang khởi tạo..."}
             </span>
             {currentUser.id && (
               <button
@@ -467,65 +518,35 @@ export default function SecureChatApp() {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
-                className="text-gray-400 hover:text-emerald-400 shrink-0"
+                className="text-gray-400 hover:text-emerald-400 bg-white/5 p-2 rounded-lg transition-colors"
               >
                 {copied ? (
-                  <Check className="w-4 h-4 text-emerald-400" />
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
                 ) : (
-                  <Copy className="w-4 h-4" />
+                  <Copy className="w-3.5 h-3.5" />
                 )}
               </button>
             )}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-1">
-          <div className="text-xs font-semibold text-gray-500 mb-2 px-2 uppercase tracking-widest">
-            Thiết bị liên kết
-          </div>
-          {rooms.map((room) => (
-            <div
-              key={room.id}
-              className={`w-full text-left px-3 py-2 rounded-md flex items-center justify-between transition-colors ${
-                currentRoom === room.id
-                  ? "bg-gray-800 text-white border border-gray-700"
-                  : "text-gray-400"
-              }`}
-            >
-              <div className="flex items-center gap-2 truncate text-sm">
-                <Lock className="w-3.5 h-3.5 opacity-60" />
-                <span className="truncate">{room.name}</span>
-              </div>
-              {room.id !== "lobby" && (
-                <button
-                  onClick={handleDisconnectPeer}
-                  className="text-gray-400 hover:text-red-400 p-1 rounded transition"
-                  title="Ngắt liên kết và xóa trò chuyện"
-                >
-                  <UserX className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div className="p-4 bg-gray-900/50 border-t border-gray-800">
-          <form onSubmit={handleJoinRoom} className="flex flex-col gap-2">
-            <div className="text-xs font-semibold text-gray-500 uppercase">
-              Kết nối tới đối tác
+        <div className="p-5 border-t border-white/5 mt-auto bg-[#0d1424]">
+          <form onSubmit={handleJoinRoom} className="flex flex-col gap-3">
+            <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">
+              Ghép nối bảo mật
             </div>
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Dán mã P2P ID..."
+                placeholder="Nhập ID đối tác..."
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-xs focus:outline-none focus:border-emerald-500 font-mono"
+                className="w-full bg-[#070b14] border border-white/10 rounded-xl p-3 text-xs text-gray-200 focus:outline-none focus:border-emerald-500/50 font-mono transition-all"
               />
               <button
                 type="submit"
                 disabled={connectionStatus === "connecting"}
-                className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 p-2 rounded text-white shrink-0"
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 p-3 rounded-xl text-white shadow-[0_0_15px_rgba(5,150,105,0.4)] disabled:shadow-none transition-all flex items-center justify-center shrink-0"
               >
                 <UserPlus className="w-4 h-4" />
               </button>
@@ -536,170 +557,209 @@ export default function SecureChatApp() {
 
       {isSidebarOpen && (
         <div
-          className="absolute inset-0 bg-black/60 z-10 md:hidden"
+          className="absolute inset-0 bg-black/80 z-20 md:hidden backdrop-blur-sm"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
-      {/* KHÔNG GIAN HỘI THOẠI */}
-      <div className="flex-1 flex flex-col min-w-0 bg-gray-900 relative">
+      {/* VÙNG CHAT CHÍNH (Đã fix lỗi Flexbox) */}
+      <div className="flex-1 flex flex-col h-screen w-full relative z-10 bg-transparent overflow-hidden">
+        {/* Overlay Cuộc gọi */}
         {callState === "receiving" && (
-          <div className="absolute inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-6 space-y-6">
-            <div className="w-20 h-20 bg-emerald-600/20 border-2 border-emerald-500 rounded-full flex items-center justify-center text-emerald-400 animate-bounce">
+          <div className="absolute inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-6 backdrop-blur-xl">
+            <div className="w-24 h-24 bg-emerald-500/20 border-2 border-emerald-400/50 rounded-full flex items-center justify-center text-emerald-400 shadow-[0_0_40px_rgba(5,150,105,0.4)] animate-pulse mb-6">
               {isVideoCall ? (
                 <Video className="w-10 h-10" />
               ) : (
                 <Phone className="w-10 h-10" />
               )}
             </div>
-            <div className="text-center">
-              <h3 className="text-lg font-bold text-white">Cuộc gọi đến...</h3>
-              <p className="text-xs text-gray-400 mt-1">
-                Yêu cầu {isVideoCall ? "Video Call" : "Gọi thoại"}
-              </p>
-            </div>
-            <div className="flex gap-4">
+            <h3 className="text-xl font-bold text-white tracking-wide">
+              Yêu cầu kết nối mã hóa
+            </h3>
+            <div className="flex gap-4 mt-8">
               <button
                 onClick={handleAnswerCall}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-2xl font-semibold flex items-center gap-2 shadow-lg"
               >
-                <Phone className="w-4 h-4" /> Chấp nhận
+                <Phone className="w-5 h-5" /> Chấp nhận
               </button>
               <button
                 onClick={handleEndCallLocal}
-                className="bg-red-600 hover:bg-red-500 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2"
+                className="bg-red-600/90 hover:bg-red-500 text-white px-6 py-3 rounded-2xl font-semibold flex items-center gap-2 shadow-lg"
               >
-                <PhoneOff className="w-4 h-4" /> Từ chối
+                <PhoneOff className="w-5 h-5" /> Từ chối
               </button>
             </div>
           </div>
         )}
 
-        {/* Header Chat */}
-        <div className="h-14 border-b border-gray-800 flex justify-between items-center px-4 bg-gray-900 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
+        {/* HEADER CHAT */}
+        <div className="h-16 border-b border-white/5 flex justify-between items-center px-4 md:px-6 bg-[#0d1424]/80 backdrop-blur-xl shrink-0 z-20 shadow-sm">
+          <div className="flex items-center gap-4">
             <button
-              className="md:hidden text-gray-400 hover:text-white"
+              className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white bg-white/5 rounded-lg"
               onClick={() => setIsSidebarOpen(true)}
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="truncate">
-              <div className="font-semibold text-sm flex items-center gap-2 truncate">
-                <Unlock
-                  className={`w-3.5 h-3.5 ${
+
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <div
+                  className={`w-10 h-10 rounded-full flex items-center justify-center border ${
                     connectionStatus === "connected"
-                      ? "text-emerald-400"
-                      : "text-gray-500"
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                      : "bg-gray-800/50 border-gray-700 text-gray-500"
                   }`}
-                />
-                {rooms.find((r) => r.id === currentRoom)?.name}
+                >
+                  <Activity
+                    className={`w-4 h-4 ${
+                      connectionStatus === "connected" ? "animate-pulse" : ""
+                    }`}
+                  />
+                </div>
               </div>
-              <div className="text-[10px] text-gray-500">
-                {connectionStatus === "connecting"
-                  ? "Đang vượt tường lửa 4G/5G..."
-                  : ""}
+              <div>
+                <div className="font-bold text-sm tracking-wide text-gray-100 flex items-center gap-2">
+                  {connectionStatus === "connected"
+                    ? "Kênh P2P Đã Mở"
+                    : "Chưa kết nối"}
+                  {encryptionState === "secured" && (
+                    <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  )}
+                </div>
+                <div className="text-[10px] font-mono text-gray-500">
+                  {encryptionState === "secured" ? (
+                    <span className="text-emerald-500">
+                      AES-GCM Đang bảo vệ
+                    </span>
+                  ) : (
+                    "Chờ thiết lập..."
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
-          {currentRoom !== "lobby" && connectionStatus === "connected" && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => handleStartCall(false)}
-                disabled={callState !== "idle"}
-                className="p-2 text-gray-400 hover:text-emerald-400 hover:bg-gray-800 rounded-md transition"
-              >
-                <Phone className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => handleStartCall(true)}
-                disabled={callState !== "idle"}
-                className="p-2 text-gray-400 hover:text-emerald-400 hover:bg-gray-800 rounded-md transition"
-              >
-                <Video className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-1.5 md:gap-3">
+            {/* Nút Privacy Mode */}
+            <button
+              onClick={() => setPrivacyMode(true)}
+              className="p-2.5 text-gray-400 hover:text-white hover:bg-white/10 rounded-xl transition-all border border-transparent"
+              title="Chế độ ẩn danh (ESC)"
+            >
+              <EyeOff className="w-4 h-4" />
+            </button>
+
+            {connectionStatus === "connected" && (
+              <>
+                <button
+                  onClick={() => handleStartCall(false)}
+                  disabled={callState !== "idle"}
+                  className="p-2.5 text-emerald-400/80 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-xl transition-all border border-transparent disabled:opacity-50"
+                >
+                  <Phone className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => handleStartCall(true)}
+                  disabled={callState !== "idle"}
+                  className="p-2.5 text-emerald-400/80 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-xl transition-all border border-transparent disabled:opacity-50"
+                >
+                  <Video className="w-4 h-4" />
+                </button>
+                <div className="w-px h-6 bg-white/10 mx-1"></div>
+                <button
+                  onClick={handleDestroyRoom}
+                  className="p-2.5 text-red-400/80 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all border border-transparent"
+                  title="Phá hủy kết nối & Dữ liệu"
+                >
+                  <UserX className="w-4 h-4" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Khung Video */}
+        {/* KHUNG VIDEO CALL */}
         {["calling", "active"].includes(callState) && (
-          <div className="bg-black border-b border-gray-800 p-3 relative flex justify-center items-center shrink-0">
-            {callState === "calling" ? (
-              <div className="h-32 flex flex-col items-center justify-center text-gray-400">
-                <Phone className="w-8 h-8 animate-pulse text-emerald-500 mb-2" />
-                <span className="text-xs">Đang đổ chuông...</span>
-              </div>
-            ) : (
-              <div className="relative w-full max-w-xl h-48 sm:h-64 bg-gray-950 rounded-xl overflow-hidden border border-gray-800 flex items-center justify-center">
-                {isVideoCall ? (
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <Phone className="w-12 h-12 animate-pulse text-emerald-400" />
-                )}
-                {isVideoCall && localStream && (
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="absolute bottom-2 right-2 w-20 h-28 object-cover rounded-lg border border-gray-700 bg-gray-900 z-10"
-                  />
-                )}
-              </div>
-            )}
-            <button
-              onClick={handleEndCallLocal}
-              className="absolute bottom-4 bg-red-600 text-white p-3 rounded-full shadow-2xl z-20"
-            >
-              <PhoneOff className="w-5 h-5" />
-            </button>
+          <div className="bg-[#050B14] border-b border-white/5 p-4 relative flex justify-center items-center shrink-0 z-10 shadow-inner">
+            <div className="relative w-full max-w-2xl h-56 md:h-72 bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl flex items-center justify-center group">
+              {isVideoCall ? (
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="flex flex-col items-center">
+                  <div className="w-20 h-20 rounded-full bg-emerald-900/30 border border-emerald-500/30 flex items-center justify-center animate-pulse">
+                    <Activity className="w-8 h-8 text-emerald-400" />
+                  </div>
+                </div>
+              )}
+              {isVideoCall && localStream && (
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="absolute bottom-4 right-4 w-24 h-36 object-cover rounded-2xl border-2 border-black shadow-xl z-10"
+                />
+              )}
+              <button
+                onClick={handleEndCallLocal}
+                className="absolute bottom-6 bg-red-600/90 hover:bg-red-500 text-white p-4 rounded-full shadow-[0_0_20px_rgba(220,38,38,0.5)] z-20 transition-transform transform hover:scale-110"
+              >
+                <PhoneOff className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Danh sách Tin nhắn */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {currentRoom === "lobby" ? (
-            <div className="h-full flex flex-col items-center justify-center p-6 text-center max-w-md mx-auto space-y-4">
-              <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                <Shield className="w-6 h-6 animate-pulse" />
+        {/* DANH SÁCH TIN NHẮN (Đã fix lỗi Flex) */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scrollbar-hide relative z-0">
+          {connectionStatus !== "connected" ? (
+            <div className="h-full flex flex-col items-center justify-center p-6 text-center max-w-sm mx-auto opacity-70">
+              <div className="w-20 h-20 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center text-gray-500 backdrop-blur-md mb-6 shadow-inner">
+                <Shield className="w-10 h-10" />
               </div>
-              <h3 className="font-bold text-sm text-gray-200">
-                Đã kích hoạt tối ưu Mobile 4G
+              <h3 className="font-bold text-lg text-gray-200 tracking-wide mb-2">
+                Trạm Kênh Mật
               </h3>
-              <p className="text-xs text-gray-400">
-                Hãy dùng máy tính (Wi-Fi) gửi mã P2P sang điện thoại (4G) và bấm
-                kết nối.
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Hãy cung cấp ID để khởi tạo giao thức mã hóa AES-256 bảo vệ dữ
+                liệu truyền tải của bạn.
               </p>
             </div>
           ) : (
             <>
-              {(messages[currentRoom] || []).map((msg) => {
+              {messages.map((msg) => {
                 const isMe = msg.senderId === currentUser.id;
                 return (
                   <div
                     key={msg.id}
                     className={`flex flex-col ${
                       isMe ? "items-end" : "items-start"
-                    }`}
+                    } w-full`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl px-3 py-1.5 relative ${
+                      className={`max-w-[85%] md:max-w-[70%] rounded-3xl px-5 py-3 relative shadow-xl backdrop-blur-md border ${
                         isMe
-                          ? "bg-emerald-900/50 text-emerald-50 border border-emerald-800/40 rounded-tr-sm"
-                          : "bg-gray-800 text-gray-100 border border-gray-700 rounded-tl-sm"
+                          ? "bg-emerald-600/20 text-emerald-50 border-emerald-500/20 rounded-br-none"
+                          : "bg-white/5 text-gray-100 border-white/10 rounded-bl-none"
                       }`}
                     >
                       {msg.isDecrypting ? (
-                        <div className="flex items-center gap-2 font-mono text-[11px] opacity-60">
-                          <Lock className="w-3 h-3 animate-pulse text-emerald-400" />
-                          <span className="break-all">{msg.cipherText}</span>
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex items-center gap-2 font-mono text-[10px] text-emerald-400 uppercase">
+                            <Lock className="w-3 h-3 animate-pulse" /> Đang giải
+                            mã...
+                          </div>
+                          <span className="break-all font-mono text-xs opacity-50 text-gray-400 bg-black/40 p-2 rounded-lg">
+                            {msg.cipherText}
+                          </span>
                         </div>
                       ) : (
                         <div className="text-sm">
@@ -711,25 +771,26 @@ export default function SecureChatApp() {
                           {msg.type === "image" && (
                             <img
                               src={msg.fileUrl}
-                              alt="P2P"
-                              className="max-w-full rounded-md max-h-48 object-cover mt-1 border border-gray-700"
+                              alt="Secure Media"
+                              className="max-w-full rounded-2xl max-h-60 object-cover mt-2 border border-white/10"
                             />
                           )}
                         </div>
                       )}
+
                       <div
-                        className={`text-[9px] flex items-center gap-1 mt-1 ${
+                        className={`text-[10px] flex items-center gap-2 mt-2.5 font-mono opacity-70 ${
                           isMe
-                            ? "text-emerald-300/60 justify-end"
-                            : "text-gray-500 justify-start"
+                            ? "justify-end text-emerald-300"
+                            : "justify-start text-gray-400"
                         }`}
                       >
-                        {msg.expiresAt && !msg.isDecrypting && (
-                          <span className="flex items-center text-orange-400 bg-orange-500/10 px-1 rounded-sm">
-                            <Clock className="w-2 h-2 mr-0.5" />
+                        {msg.deleteAt && !msg.isDecrypting && (
+                          <span className="flex items-center bg-orange-500/20 text-orange-400 px-2 py-0.5 rounded-md">
+                            <Clock className="w-3 h-3 mr-1" />
                             {Math.max(
                               1,
-                              Math.round((msg.expiresAt - Date.now()) / 1000)
+                              Math.round((msg.deleteAt - Date.now()) / 1000)
                             )}
                             s
                           </span>
@@ -745,33 +806,46 @@ export default function SecureChatApp() {
                   </div>
                 );
               })}
+
+              {/* Hiệu ứng gõ phím */}
+              {partnerTyping && (
+                <div className="flex flex-col items-start w-full">
+                  <div className="bg-white/5 border border-white/10 rounded-3xl rounded-bl-none px-5 py-3 shadow-lg flex items-center gap-2">
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></span>
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></span>
+                  </div>
+                </div>
+              )}
             </>
           )}
-          <div ref={messagesEndRef} />
+          {/* Element rỗng để cuộn tới */}
+          <div ref={messagesEndRef} className="h-1" />
         </div>
 
-        {/* Cụm chức năng Nhập tin & Hẹn giờ */}
-        <div className="p-3 bg-gray-900 border-t border-gray-800">
-          <div className="flex gap-2 mb-2 relative">
+        {/* INPUT AREA */}
+        <div className="p-4 md:p-6 bg-[#0d1424]/90 backdrop-blur-2xl border-t border-white/5 shadow-[0_-10px_40px_rgba(0,0,0,0.3)] shrink-0 z-20">
+          <div className="flex gap-2 mb-3 relative">
             <button
               type="button"
               onClick={() => setShowTimerMenu(!showTimerMenu)}
-              disabled={
-                currentRoom === "lobby" || connectionStatus !== "connected"
-              }
-              className={`flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full border transition-colors ${
+              disabled={connectionStatus !== "connected"}
+              className={`flex items-center gap-1.5 text-xs px-4 py-2 rounded-xl border font-mono tracking-wide transition-all ${
                 timerSetting > 0
-                  ? "bg-orange-500/20 text-orange-400 border-orange-500/30"
-                  : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
-              } disabled:opacity-50`}
+                  ? "bg-orange-500/10 text-orange-400 border-orange-500/30"
+                  : "bg-white/5 text-gray-400 border-white/10 hover:bg-white/10"
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
-              <Clock className="w-3 h-3" />
-              {timerSetting === 0 ? "Tự hủy: Tắt" : `Sau ${timerSetting}s`}
+              <Clock className="w-4 h-4" />
+              {timerSetting === 0 ? "Hẹn Giờ: OFF" : `Hủy sau ${timerSetting}s`}
             </button>
 
             {showTimerMenu && (
-              <div className="absolute bottom-full left-0 mb-2 w-32 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
-                {[0, 5, 10, 60, 300].map((val) => (
+              <div className="absolute bottom-full left-0 mb-3 w-40 bg-[#070b14] border border-white/10 rounded-2xl shadow-2xl z-30 overflow-hidden backdrop-blur-xl font-mono text-sm">
+                <div className="px-4 py-3 border-b border-white/5 text-gray-500 uppercase tracking-widest text-[10px]">
+                  Thời gian tự hủy
+                </div>
+                {[0, 5, 10, 30].map((val) => (
                   <button
                     key={val}
                     type="button"
@@ -779,9 +853,9 @@ export default function SecureChatApp() {
                       setTimerSetting(val);
                       setShowTimerMenu(false);
                     }}
-                    className="block w-full text-left px-4 py-2 text-xs text-white hover:bg-gray-700 transition"
+                    className="block w-full text-left px-4 py-3 text-gray-300 hover:bg-emerald-500/10 hover:text-emerald-400 transition-colors"
                   >
-                    {val === 0 ? "Tắt hẹn giờ" : `Sau ${val} giây`}
+                    {val === 0 ? "Tắt" : `${val} Giây`}
                   </button>
                 ))}
               </div>
@@ -793,7 +867,7 @@ export default function SecureChatApp() {
               e.preventDefault();
               handleSendMessage("text");
             }}
-            className="flex items-end gap-2 bg-gray-950 p-1.5 rounded-xl border border-gray-800"
+            className="flex items-end gap-2 bg-[#050B14] p-2 rounded-3xl border border-white/10 focus-within:border-emerald-500/40 focus-within:ring-1 focus-within:ring-emerald-500/20 transition-all"
           >
             <input
               type="file"
@@ -806,20 +880,20 @@ export default function SecureChatApp() {
               type="button"
               disabled={connectionStatus !== "connected"}
               onClick={() => fileInputRef.current?.click()}
-              className="p-2 text-gray-400 hover:text-white disabled:text-gray-700"
+              className="p-3 text-gray-400 hover:text-emerald-400 bg-white/5 hover:bg-emerald-500/10 rounded-2xl transition-all disabled:opacity-30"
             >
-              <Paperclip className="w-4.5 h-4.5" />
+              <Paperclip className="w-5 h-5" />
             </button>
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={handleInputChange}
               disabled={connectionStatus !== "connected"}
               placeholder={
                 connectionStatus === "connected"
-                  ? "Nhập tin nhắn..."
-                  : "Chưa có kết nối..."
+                  ? "Nhập tin nhắn mã hóa..."
+                  : "Khóa P2P chưa sẵn sàng..."
               }
-              className="flex-1 bg-transparent max-h-24 text-sm text-gray-100 resize-none py-1.5 focus:outline-none"
+              className="flex-1 bg-transparent max-h-32 min-h-[48px] text-sm text-gray-100 placeholder-gray-600 resize-none py-3.5 px-3 focus:outline-none scrollbar-hide"
               rows="1"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -831,13 +905,13 @@ export default function SecureChatApp() {
             <button
               type="submit"
               disabled={!inputText.trim() || connectionStatus !== "connected"}
-              className={`p-2 rounded-full ${
+              className={`p-3 rounded-2xl transition-all flex items-center justify-center shrink-0 ${
                 inputText.trim() && connectionStatus === "connected"
-                  ? "bg-emerald-600 text-white"
-                  : "bg-gray-800 text-gray-600"
+                  ? "bg-emerald-600 text-white shadow-lg transform hover:scale-105"
+                  : "bg-white/5 text-gray-600"
               }`}
             >
-              <Send className="w-4 h-4" />
+              <Send className="w-5 h-5" />
             </button>
           </form>
         </div>

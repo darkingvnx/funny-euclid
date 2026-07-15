@@ -145,9 +145,26 @@ export default function SecureChatApp() {
       debug: 1,
       config: {
         iceServers: [
-          { urls: "stun:stun.relay.metered.ca:80" },
+          {
+            urls: "stun:stun.relay.metered.ca:80",
+          },
           {
             urls: "turn:global.relay.metered.ca:80",
+            username: "007f172b13f568869488991e",
+            credential: "Ia/VNUXBdCJNlagv",
+          },
+          {
+            urls: "turn:global.relay.metered.ca:80?transport=tcp",
+            username: "007f172b13f568869488991e",
+            credential: "Ia/VNUXBdCJNlagv",
+          },
+          {
+            urls: "turn:global.relay.metered.ca:443",
+            username: "007f172b13f568869488991e",
+            credential: "Ia/VNUXBdCJNlagv",
+          },
+          {
+            urls: "turns:global.relay.metered.ca:443?transport=tcp",
             username: "007f172b13f568869488991e",
             credential: "Ia/VNUXBdCJNlagv",
           },

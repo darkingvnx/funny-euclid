@@ -51,7 +51,7 @@ export default function SecureChatApp() {
   });
   const [peerInstance, setPeerInstance] = useState(null);
   const [activeConnection, setActiveConnection] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState("disconnected"); // disconnected, connecting, connected
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
 
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -91,7 +91,6 @@ export default function SecureChatApp() {
   // LÕI MẠNG ĐÃ ĐƯỢC TỐI ƯU HÓA CHO 4G/5G
   // ==========================================
   useEffect(() => {
-    // Ép buộc trình duyệt sử dụng chuẩn bảo mật WSS để không bị rớt tín hiệu trên Cloudflare
     const peer = new Peer(undefined, {
       secure: true,
       debug: 2,
@@ -164,24 +163,21 @@ export default function SecureChatApp() {
     conn.on("data", (data) => {
       if (data.type === "secure-msg")
         receiveMessageOverWire(newRoomId, data.payload);
-      if (data.type === "force-disconnect") handleResetToLobby();
+      if (data.type === "force-disconnect") handleResetToLobby(true); // Tham số true để báo hiệu bị đối tác ngắt
     });
 
-    conn.on("close", () => handleResetToLobby());
+    conn.on("close", () => handleResetToLobby(false));
   };
 
   const handleJoinRoom = (e) => {
     e.preventDefault();
     if (!joinCode.trim() || !peerInstance) return;
-
     setConnectionStatus("connecting");
 
-    // ĐÃ GỠ BỎ 'reliable: true' ĐỂ TRÁNH KẸT KẾT NỐI TRÊN MẠNG DI ĐỘNG 4G
     const conn = peerInstance.connect(joinCode.trim(), {
       metadata: { name: currentUser.name },
     });
 
-    // Cài đặt đếm ngược: Nếu sau 10 giây không qua được 4G sẽ báo lỗi
     const timeout = setTimeout(() => {
       if (connectionStatus !== "connected") {
         alert(
@@ -205,11 +201,11 @@ export default function SecureChatApp() {
       conn.on("data", (data) => {
         if (data.type === "secure-msg")
           receiveMessageOverWire(newRoomId, data.payload);
-        if (data.type === "force-disconnect") handleResetToLobby();
+        if (data.type === "force-disconnect") handleResetToLobby(true);
       });
     });
 
-    conn.on("close", () => handleResetToLobby());
+    conn.on("close", () => handleResetToLobby(false));
     conn.on("error", () => {
       clearTimeout(timeout);
       alert("Không thể kết nối P2P. Mã bị sai hoặc tường lửa chặn.");
@@ -242,7 +238,6 @@ export default function SecureChatApp() {
         setCallState("active");
         setRemoteStream(remoteMediaStream);
       });
-
       call.on("close", () => handleEndCallLocal());
     } catch (err) {
       alert("Lỗi: Trình duyệt chưa cấp quyền Camera/Microphone.");
@@ -265,7 +260,6 @@ export default function SecureChatApp() {
       activeCall.on("stream", (remoteMediaStream) => {
         setRemoteStream(remoteMediaStream);
       });
-
       activeCall.on("close", () => handleEndCallLocal());
     } catch (err) {
       handleEndCallLocal();
@@ -281,8 +275,13 @@ export default function SecureChatApp() {
     setCallState("idle");
   };
 
+  // Tính năng ngắt kết nối và xóa sạch dữ liệu
   const handleDisconnectPeer = () => {
-    if (window.confirm("Ngắt kết nối với thiết bị đối tác?")) {
+    if (
+      window.confirm(
+        "Ngắt kết nối với thiết bị đối tác và xóa toàn bộ trò chuyện?"
+      )
+    ) {
       handleEndCallLocal();
       if (activeConnection) {
         try {
@@ -290,16 +289,27 @@ export default function SecureChatApp() {
         } catch (e) {}
         activeConnection.close();
       }
-      handleResetToLobby();
+      handleResetToLobby(false);
     }
   };
 
-  const handleResetToLobby = () => {
+  // Đồng bộ làm sạch phòng chờ và bộ nhớ RAM
+  const handleResetToLobby = (isForced = false) => {
     handleEndCallLocal();
     setActiveConnection(null);
     setConnectionStatus("disconnected");
     setRooms([{ id: "lobby", name: "Trạm chờ kết nối P2P" }]);
     setCurrentRoom("lobby");
+
+    // Xóa sạch toàn bộ tin nhắn khỏi bộ nhớ
+    setMessages({ lobby: [] });
+
+    // Hiển thị thông báo nếu do đối phương ngắt
+    if (isForced) {
+      alert(
+        "Đối tác đã kết thúc trò chuyện. Toàn bộ lịch sử đã được xóa bảo mật trên cả 2 thiết bị."
+      );
+    }
   };
 
   const receiveMessageOverWire = (roomId, incomingMsg) => {
@@ -310,6 +320,7 @@ export default function SecureChatApp() {
     }));
 
     if (internalMsg.expiresAt) {
+      // Đồng bộ thời gian hết hạn theo clock của máy nhận
       internalMsg.expiresAt =
         Date.now() + internalMsg.timerDuration * 1000 + 1500;
     }
@@ -358,6 +369,7 @@ export default function SecureChatApp() {
         { ...securePayload, isDecrypting: true },
       ],
     }));
+
     if (type === "text") setInputText("");
 
     setTimeout(() => {
@@ -393,6 +405,7 @@ export default function SecureChatApp() {
     e.target.value = null;
   };
 
+  // Garbage Collector quét và xóa tin nhắn hết hạn mỗi 1 giây
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -454,7 +467,7 @@ export default function SecureChatApp() {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
-                className="text-gray-400 hover:text-emerald-400"
+                className="text-gray-400 hover:text-emerald-400 shrink-0"
               >
                 {copied ? (
                   <Check className="w-4 h-4 text-emerald-400" />
@@ -487,6 +500,7 @@ export default function SecureChatApp() {
                 <button
                   onClick={handleDisconnectPeer}
                   className="text-gray-400 hover:text-red-400 p-1 rounded transition"
+                  title="Ngắt liên kết và xóa trò chuyện"
                 >
                   <UserX className="w-4 h-4" />
                 </button>
@@ -736,8 +750,44 @@ export default function SecureChatApp() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Message */}
+        {/* Cụm chức năng Nhập tin & Hẹn giờ */}
         <div className="p-3 bg-gray-900 border-t border-gray-800">
+          <div className="flex gap-2 mb-2 relative">
+            <button
+              type="button"
+              onClick={() => setShowTimerMenu(!showTimerMenu)}
+              disabled={
+                currentRoom === "lobby" || connectionStatus !== "connected"
+              }
+              className={`flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full border transition-colors ${
+                timerSetting > 0
+                  ? "bg-orange-500/20 text-orange-400 border-orange-500/30"
+                  : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
+              } disabled:opacity-50`}
+            >
+              <Clock className="w-3 h-3" />
+              {timerSetting === 0 ? "Tự hủy: Tắt" : `Sau ${timerSetting}s`}
+            </button>
+
+            {showTimerMenu && (
+              <div className="absolute bottom-full left-0 mb-2 w-32 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
+                {[0, 5, 10, 60, 300].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => {
+                      setTimerSetting(val);
+                      setShowTimerMenu(false);
+                    }}
+                    className="block w-full text-left px-4 py-2 text-xs text-white hover:bg-gray-700 transition"
+                  >
+                    {val === 0 ? "Tắt hẹn giờ" : `Sau ${val} giây`}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
